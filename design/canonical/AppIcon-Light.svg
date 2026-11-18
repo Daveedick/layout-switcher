@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Layout Switcher · Satin 2C · light appearance</title>
+  <defs>
+      <linearGradient id="ink" gradientUnits="userSpaceOnUse" x1="150" y1="310" x2="875" y2="690">
+        <stop offset="0" stop-color="#D4D7DF"/>
+        <stop offset=".52" stop-color="#8D929E"/>
+        <stop offset="1" stop-color="#626673"/>
+      </linearGradient>
+    </defs>
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="#F7F7FA" stroke="#D9D7DF" stroke-width="10"/>
+  <rect x="132" y="312" width="760" height="400" rx="140" fill="#A8A9B5"/>
+  <rect x="148" y="328" width="728" height="368" rx="124" fill="#F7F7FA"/>
+  <path fill="url(#ink)" fill-rule="evenodd"
+        d="M272 312 H512 V712 H272 C195 712 132 649 132 572 V452 C132 375 195 312 272 312 Z
+           M258 604 L316 428 H350 L408 604 H371 L359 566 H306 L294 604 Z
+           M315 538 H350 L333 478 Z"/>
+  <path fill="url(#ink)" fill-rule="evenodd"
+        d="M764 604 H728 V542 H706 L662 604 H619 L670 535
+           C642 526 628 508 628 484 C628 451 654 428 692 428 H764 Z
+           M728 459 H693 C674 459 663 469 663 485 C663 501 674 511 694 511 H728 Z"/>
+</svg>
