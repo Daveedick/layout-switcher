@@ -12,6 +12,9 @@ enum LayoutSwitcherEntry {
     private static var lockFD: Int32 = -1
     static func main() {
         let args = Set(CommandLine.arguments.dropFirst())
+        if args.contains("--watchdog") { Watchdog.run() }
+        // Old registrations may still point here until the user enables the new watchdog.
+        if args.contains("--managed") { return }
         if args.contains("--version") {
             print("Layout Switcher \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0")")
             return
@@ -40,28 +43,17 @@ enum LayoutSwitcherEntry {
             _ = delegate
             return
         }
-        let managed = args.contains("--managed")
         let lockPath = NSTemporaryDirectory() + "local.layout-switcher.app.lock"
         lockFD = open(lockPath, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
-        guard lockFD >= 0 else { exit(managed ? 75 : 0) }
-        if managed {
-            let deadline = Date().addingTimeInterval(5)
-            while flock(lockFD, LOCK_EX | LOCK_NB) != 0 && Date() < deadline { usleep(100_000) }
-            guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { exit(75) }
-        } else if flock(lockFD, LOCK_EX | LOCK_NB) != 0 {
+        guard lockFD >= 0 else { exit(75) }
+        if flock(lockFD, LOCK_EX | LOCK_NB) != 0 {
             // A second launch asks the already-running instance to show its setup UI.
             DistributedNotificationCenter.default().postNotificationName(
                 showSetupNotification, object: nil, userInfo: nil, deliverImmediately: true
             )
             exit(0)
         }
-        if !managed {
-            let service = ServiceController()
-            if service.isRegistered, (try? service.kickstart()) == 0 {
-                // Lock is released on exit; the managed agent waits for ownership.
-                exit(0)
-            }
-        }
+        Watchdog.prepareGUI()
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let delegate = AppDelegate()
@@ -82,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var currentShortcut = KeyboardShortcut.defaultShortcut
     private var serviceProvider: LayoutSwitcherServiceProvider?
     private var service: ServiceController!
+    private var serviceError: String?
     private var statusText = "Запуск…"
     private var setupWindow: NSWindow?
     private var setupStatusLabel: NSTextField?
@@ -145,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             settingsDefaults.removePersistentDomain(forName: previewSuiteName)
         } else {
             ClipboardReplacement.flushIfOwned()
+            if service?.isRegistered == true { Watchdog.markCleanExit() }
         }
         if let setupNotificationToken {
             DistributedNotificationCenter.default().removeObserver(setupNotificationToken)
@@ -181,12 +175,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let accessibilityDescription = "Layout Switcher — \(statusText)"
         statusItem.button?.toolTip = accessibilityDescription
         statusItem.button?.setAccessibilityLabel(accessibilityDescription)
-        statusItem.button?.alphaValue = runtime.isRunning ? 1 : 0.45
+        statusItem.button?.alphaValue = runtime.isKeyboardMonitorAvailable ? 1 : 0.45
         setupStatusLabel?.stringValue = statusText
         let menu = NSMenu()
         let status = NSMenuItem(title: statusText, action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
+        if runtime.isSecureInputPaused {
+            let copy = NSMenuItem(title: "Исправить текст в буфере обмена", action: #selector(convertCopiedText),
+                                  keyEquivalent: "")
+            copy.target = self
+            menu.addItem(copy)
+        }
         menu.addItem(.separator())
         let toggle = NSMenuItem(title: runtime.isRunning ? "Приостановить" : "Возобновить", action: #selector(toggleRuntime), keyEquivalent: "")
         toggle.target = self
@@ -209,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(setup)
         let loginTitle: String
         if service.isRegistered {
-            loginTitle = "Отключить автозапуск и завершить"
+            loginTitle = "Отключить автозапуск и восстановление"
         } else if service.requiresApproval {
             loginTitle = "Открыть настройки объектов входа…"
         } else {
@@ -223,6 +223,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let login = NSMenuItem(title: loginTitle, action: #selector(toggleService), keyEquivalent: "")
         login.target = self
         menu.addItem(login)
+        if let serviceError {
+            let error = NSMenuItem(title: serviceError, action: nil, keyEquivalent: "")
+            error.isEnabled = false
+            menu.addItem(error)
+        }
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Завершить", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -241,6 +246,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func toggleRuntime() {
         runtime.isRunning ? runtime.stop() : runtime.start()
         refreshMenu()
+    }
+
+    @objc private func convertCopiedText() {
+        if !ClipboardReplacement.transformCopiedText(on: .general, transform: { LayoutConverter.convert($0)?.text }) {
+            NSSound.beep()
+        }
     }
 
     @objc private func retryPermissions() {
@@ -389,21 +400,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return
         }
+        serviceError = nil
         do {
             if service.isRegistered {
                 try service.disable()
-                runtime.stop()
-                NSApp.terminate(nil)
-                return
             } else {
-                try service.enableAndHandOffCurrentProcess()
-                // The registered LaunchAgent becomes the owner. It starts the same app
-                // executable with KeepAlive; terminate this Finder-owned instance.
-                NSApp.terminate(nil)
-                return
+                try service.enable()
             }
         } catch {
-            statusText = "Сервис: \(error.localizedDescription)"
+            serviceError = "Автозапуск: \(error.localizedDescription)"
         }
         refreshMenu()
     }

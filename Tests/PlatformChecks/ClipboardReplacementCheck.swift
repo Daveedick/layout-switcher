@@ -120,7 +120,35 @@ enum ClipboardReplacementCheck {
             fail("oversized clipboard snapshot was not rejected unchanged")
         }
 
-        print("PASS: isolated pasteboard restoration, ownership/readiness, overlap, delayed worker finish, empty clipboard, flush, and size bound")
+        guard !ClipboardReplacement.transformCopiedText(on: pasteboard, transform: { $0.uppercased() }),
+              snapshot(pasteboard) == original else { fail("manual transform changed a multi-item pasteboard") }
+        let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+        let hidden = makeItem("concealed", customType: concealed.rawValue, customData: Data())
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects([hidden]),
+              !ClipboardReplacement.transformCopiedText(on: pasteboard, transform: { $0.uppercased() }),
+              pasteboard.string(forType: .string) == "concealed" else {
+            fail("manual transform changed concealed content")
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("example", forType: .string)
+        guard let busy = ClipboardReplacement.prepare(text: "temporary edit", pasteboard: pasteboard),
+              !ClipboardReplacement.transformCopiedText(on: pasteboard, transform: { $0.uppercased() }),
+              busy.finish(confirmed: true),
+              ClipboardReplacement.transformCopiedText(on: pasteboard, transform: { $0.uppercased() }),
+              pasteboard.string(forType: .string) == "EXAMPLE" else {
+            fail("manual text transform failed or interfered with an active transaction")
+        }
+        let staleConversion = ClipboardReplacement.transformCopiedText(on: pasteboard) { _ in
+            pasteboard.clearContents()
+            pasteboard.setString("new copy", forType: .string)
+            return "stale result"
+        }
+        guard !staleConversion, pasteboard.string(forType: .string) == "new copy" else {
+            fail("manual text transform overwrote a newer copy")
+        }
+
+        print("PASS: isolated pasteboard restoration, ownership/readiness, overlap, delayed worker finish, empty clipboard, flush, size bound, and manual text transform")
     }
 
     private static func makeItem(_ text: String, customType: String, customData: Data) -> NSPasteboardItem {

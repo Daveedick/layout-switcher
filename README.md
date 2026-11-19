@@ -17,17 +17,21 @@ Select text or finish typing a word, then press and release **⌥⌘** to conver
 
 ## Install
 
-1. Download `Layout-Switcher-0.3.3-arm64.dmg` from the [v0.3.3 preview release](https://github.com/Daveedick/layout-switcher/releases/tag/v0.3.3). The release includes a SHA-256 checksum.
+1. Download `Layout-Switcher-0.3.5-arm64.dmg` from the [v0.3.5 preview release](https://github.com/Daveedick/layout-switcher/releases/tag/v0.3.5). The release includes a SHA-256 checksum.
 2. Open the disk image, drag **Layout Switcher** into Applications, and launch that copy.
 3. Grant **Accessibility** and **Input Monitoring** in System Settings, then use **Проверить разрешения** in the app or reopen it. Add ABC and Russian – PC to your macOS input sources if needed.
 
 The preview has an ad-hoc signature and comes without Apple notarization. macOS may show an unidentified-developer prompt. After checking the source and checksum, use the app-specific **Open Anyway** option in **System Settings → Privacy & Security**, if offered. An update may require granting both permissions again.
 
-Use **Сочетание клавиш…** in the menu to set a shortcut. **Включить вход и восстановление после сбоя…** opts into launch at login and recovery. **Завершить** exits for the current session and keeps the login setting. The menu also has an action to turn off automatic launch and exit.
+If launch at login is enabled in an older version, turn it off before replacing the app, then enable it again from the new version.
+
+Use **Сочетание клавиш…** in the menu to set a shortcut. Turning launch at login and recovery on or off keeps Layout Switcher open. **Завершить** exits for the current session and keeps the login setting.
 
 ## Privacy and compatibility
 
 Text processing stays on the Mac. The app keeps a short in-memory buffer for recent-word correction and skips protected input. The Codex selection path briefly uses the system clipboard and restores the previous contents while it still owns the write. The app stores no typing or clipboard history and makes no network requests.
+
+While macOS Secure Input pauses global shortcuts, the menu shows the pause and offers **Исправить текст в буфере обмена** to convert text you have copied to plain text. The shortcut resumes automatically when Secure Input ends.
 
 Correction runs on demand. If you already use Punto Switcher, quit it before testing Layout Switcher to avoid conflicts. Editors expose selection and text editing differently, so compatibility can vary by app and field. Text typed before launch or pasted from the clipboard can be corrected by selecting it explicitly.
 

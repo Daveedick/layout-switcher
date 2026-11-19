@@ -19,9 +19,9 @@ cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp Resources/AppIconDark.png "$APP/Contents/Resources/AppIconDark.png"
 cp Resources/MenuIcon.png "$APP/Contents/Resources/MenuIcon.png"
 cp Resources/MenuIcon@2x.png "$APP/Contents/Resources/MenuIcon@2x.png"
-cp Resources/local.layout-switcher.agent.plist "$APP/Contents/Library/LaunchAgents/"
+cp Resources/local.layout-switcher.agent.plist Resources/local.layout-switcher.watchdog.plist "$APP/Contents/Library/LaunchAgents/"
 if [[ -d Resources/Licenses ]]; then ditto Resources/Licenses "$APP/Contents/Resources/Licenses"; fi
-plutil -lint "$APP/Contents/Info.plist" "$APP/Contents/Library/LaunchAgents/local.layout-switcher.agent.plist"
+plutil -lint "$APP/Contents/Info.plist" "$APP/Contents/Library/LaunchAgents/"*.plist
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 echo "Built $APP"

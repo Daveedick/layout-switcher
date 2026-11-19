@@ -43,6 +43,7 @@ final class SwitcherRuntime {
     private static let ownEventTag: Int64 = 0x4C535752
     private static let replayEventTag: Int64 = 0x4C535250
     private static let statusLogger = Logger(subsystem: "local.layout-switcher.app", category: "RuntimeStatus")
+    private static let secureInputStatus = "Пауза: защищённый ввод macOS"
     // Physical fallback stays bounded, while writable AX and Services can handle larger selections.
     private static let maximumSyntheticUTF16Length = 256
     private static let maximumServiceUTF16Length = 16_384
@@ -91,6 +92,10 @@ final class SwitcherRuntime {
     private var diagnosticShortcutKeyCode: UInt16?
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
+    // Main-thread state. Secure Input can suppress callbacks entirely, so observe it independently.
+    private var secureInputTimer: Timer?
+    private var secureInputActive = false
+    private var tapDisabledByUserInput = false
     private var workspaceTokens: [NSObjectProtocol] = []
     private var distributedTokens: [NSObjectProtocol] = []
 
@@ -100,6 +105,12 @@ final class SwitcherRuntime {
     }
 
     var isRunning: Bool { lifecycleLock.withLock { lifecycleRunning && !lifecyclePaused } }
+    var isSecureInputPaused: Bool { secureInputActive }
+    var isKeyboardMonitorAvailable: Bool {
+        guard isRunning, !isSecureInputPaused, !tapDisabledByUserInput, let tap,
+              CFMachPortIsValid(tap) else { return false }
+        return CGEvent.tapIsEnabled(tap: tap)
+    }
 
     func start() {
         DispatchQueue.main.async { [weak self] in self?.startOnMain() }
@@ -111,7 +122,13 @@ final class SwitcherRuntime {
     }
 
     private func stopOnMain() {
-        cancelMutationAndReplayHeld()
+        if IsSecureEventInputEnabled() {
+            cancelMutationAndDiscardHeld()
+        } else {
+            cancelMutationAndReplayHeld()
+        }
+        stopSecureInputObservation()
+        tapDisabledByUserInput = false
         advanceGeneration()
         shortcutRecognizer.reset()
         shortcutRecording = false
@@ -133,7 +150,14 @@ final class SwitcherRuntime {
             return
         }
         shortcutRecognizer.cancelGesture()
-        if value { cancelMutationAndReplayHeld() }
+        if value {
+            if IsSecureEventInputEnabled() {
+                cancelMutationAndDiscardHeld()
+            } else {
+                cancelMutationAndReplayHeld()
+            }
+            stopSecureInputObservation()
+        }
         advanceGeneration()
         lifecycleLock.withLock { lifecyclePaused = value }
         clearPendingService()
@@ -141,7 +165,12 @@ final class SwitcherRuntime {
             self.paused = value
             self.resetStateLocked()
         }
-        publish(value ? "Приостановлено" : "Работает")
+        if value {
+            publish("Приостановлено")
+        } else if isRunning {
+            observeSecureInput()
+            if !secureInputActive { refreshKeyboardMonitor(checkTap: true) }
+        }
     }
 
     /// Main-thread settings entry point. Invalid values are ignored defensively.
@@ -182,14 +211,20 @@ final class SwitcherRuntime {
                 self.publish("Сначала завершите Punto Switcher, затем возобновите")
                 return
             }
-            guard AXIsProcessTrusted(), self.installTap() else {
+            guard AXIsProcessTrusted() else {
+                self.publish("Разрешите Универсальный доступ и Мониторинг ввода")
+                return
+            }
+            self.tapDisabledByUserInput = false
+            guard self.installTap() else {
                 self.publish("Разрешите Универсальный доступ и Мониторинг ввода")
                 return
             }
             self.setLifecycle(running: true, paused: false)
             self.stateQueue.async { self.running = true; self.paused = false; self.resetStateLocked() }
             self.observeWorkspace()
-            self.publish("Работает")
+            self.observeSecureInput()
+            if !self.secureInputActive { self.publish("Работает") }
         }
     }
 
@@ -234,6 +269,7 @@ final class SwitcherRuntime {
             publish("Требуется разрешение Универсального доступа")
             return
         }
+        tapDisabledByUserInput = false
         guard installTap() else {
             publish("Требуется разрешение Мониторинга ввода")
             return
@@ -242,18 +278,74 @@ final class SwitcherRuntime {
         setLifecycle(running: true, paused: false)
         stateQueue.async { self.running = true; self.paused = false; self.resetStateLocked() }
         observeWorkspace()
+        observeSecureInput()
         // TIS keyboard-map construction is intentionally warmed outside the event tap callback.
         axQueue.async {
             _ = InputSources.text(for: TypedKey(keyCode: 0, shift: false, caps: false), sourceID: InputSources.abcID)
             _ = InputSources.text(for: TypedKey(keyCode: 0, shift: false, caps: false), sourceID: InputSources.russianWinID)
         }
-        publish("Работает")
+        if !secureInputActive { publish("Работает") }
+    }
+
+    private func observeSecureInput() {
+        if secureInputTimer == nil {
+            let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+                self?.refreshKeyboardMonitor()
+            }
+            timer.tolerance = 0.1
+            secureInputTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
+        refreshKeyboardMonitor()
+    }
+
+    private func stopSecureInputObservation() {
+        secureInputTimer?.invalidate()
+        secureInputTimer = nil
+        secureInputActive = false
+    }
+
+    private func enterSecureInput() {
+        guard !secureInputActive else { return }
+        secureInputActive = true
+        cancelMutationAndDiscardHeld()
+        shortcutRecognizer.cancelGesture()
+        diagnosticShortcutKeyCode = nil
+        clearPendingService()
+        invalidateBuffer()
+        publish(Self.secureInputStatus)
+    }
+
+    private func refreshKeyboardMonitor(checkTap: Bool = false) {
+        guard isRunning else { return }
+        if IsSecureEventInputEnabled() {
+            enterSecureInput()
+            return
+        }
+        let wasSecure = secureInputActive
+        guard wasSecure || checkTap else { return }
+        secureInputActive = false
+        if wasSecure {
+            shortcutRecognizer.cancelGesture()
+            invalidateBuffer()
+        }
+        if tapDisabledByUserInput {
+            publish("Монитор клавиатуры отключён")
+        } else if let tap, CFMachPortIsValid(tap), CGEvent.tapIsEnabled(tap: tap) {
+            if wasSecure { publish("Работает") }
+        } else {
+            publish(installTap() ? "Монитор клавиатуры восстановлен" :
+                    "Не удалось восстановить монитор клавиатуры")
+        }
     }
 
     private func installTap() -> Bool {
-        guard tap == nil else {
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-            return tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false
+        if let tap {
+            if CFMachPortIsValid(tap) {
+                if !CGEvent.tapIsEnabled(tap: tap) { CGEvent.tapEnable(tap: tap, enable: true) }
+                if CGEvent.tapIsEnabled(tap: tap) { return true }
+            }
+            removeTap()
         }
         let types: [CGEventType] = [
             .flagsChanged, .keyDown, .keyUp,
@@ -273,12 +365,17 @@ final class SwitcherRuntime {
         tap = newTap
         tapSource = source
         CGEvent.tapEnable(tap: newTap, enable: true)
-        return true
+        if CGEvent.tapIsEnabled(tap: newTap) { return true }
+        removeTap()
+        return false
     }
 
     private func removeTap() {
         shortcutRecognizer.reset()
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false); CFMachPortInvalidate(tap) }
+        if let tap, CFMachPortIsValid(tap) {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
         if let tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, .commonModes) }
         tapSource = nil
         tap = nil
@@ -288,14 +385,20 @@ final class SwitcherRuntime {
         guard let userInfo else { return Unmanaged.passUnretained(event) }
         let runtime = Unmanaged<SwitcherRuntime>.fromOpaque(userInfo).takeUnretainedValue()
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            runtime.cancelMutationAndReplayHeld()
-            runtime.advanceGeneration()
+            if type == .tapDisabledByUserInput { runtime.tapDisabledByUserInput = true }
+            if IsSecureEventInputEnabled() {
+                runtime.enterSecureInput()
+            } else if runtime.secureInputActive {
+                runtime.cancelMutationAndDiscardHeld()
+            } else {
+                runtime.cancelMutationAndReplayHeld()
+            }
             runtime.shortcutRecognizer.reset()
-            runtime.stateQueue.async { [weak runtime] in runtime?.resetStateLocked() }
+            runtime.invalidateBuffer()
+            let interruptedTap = runtime.tap
             DispatchQueue.main.async { [weak runtime] in
-                guard let runtime, runtime.isRunning else { return }
-                _ = runtime.installTap()
-                runtime.publish("Монитор клавиатуры восстановлен")
+                guard let runtime, runtime.tap === interruptedTap else { return }
+                runtime.refreshKeyboardMonitor(checkTap: true)
             }
             return Unmanaged.passUnretained(event)
         }
@@ -315,9 +418,9 @@ final class SwitcherRuntime {
             }
         }
         guard runtime.isRunning else { return Unmanaged.passUnretained(event) }
-        guard !IsSecureEventInputEnabled() else {
-            runtime.advanceGeneration()
-            runtime.shortcutRecognizer.cancelGesture()
+        let secureInputEnabled = IsSecureEventInputEnabled()
+        if secureInputEnabled { runtime.enterSecureInput() }
+        guard !secureInputEnabled, !runtime.secureInputActive, !runtime.tapDisabledByUserInput else {
             if type == .keyUp {
                 let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
                 if runtime.shortcutRecognizer.ownsKeyUp(for: keyCode) {
@@ -326,8 +429,6 @@ final class SwitcherRuntime {
                     return nil
                 }
             }
-            runtime.cancelMutationAndDiscardHeld()
-            runtime.stateQueue.async { [weak runtime] in runtime?.resetStateLocked() }
             return Unmanaged.passUnretained(event)
         }
         if runtime.routeConcurrentEvent(type: type, event: event) { return nil }
@@ -534,6 +635,7 @@ final class SwitcherRuntime {
 
     private func postReplay(_ events: [HeldEvent]) {
         let post = {
+            guard !self.secureInputActive, !IsSecureEventInputEnabled() else { return }
             for held in events {
                 held.event.setIntegerValueField(.eventSourceUserData, value: Self.replayEventTag)
                 held.event.post(tap: .cghidEventTap)
@@ -1335,8 +1437,8 @@ final class SwitcherRuntime {
         workspaceTokens.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self, self.isRunning else { return }
             self.shortcutRecognizer.cancelGesture()
-            if let tap = self.tap { CGEvent.tapEnable(tap: tap, enable: true) } else { _ = self.installTap() }
             self.invalidateBuffer()
+            self.refreshKeyboardMonitor(checkTap: true)
         })
         distributedTokens.append(DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
@@ -1394,7 +1496,10 @@ final class SwitcherRuntime {
 
     private func publish(_ status: String) {
         Self.statusLogger.notice("\(status, privacy: .public)")
-        DispatchQueue.main.async { [statusHandler] in statusHandler(status) }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.secureInputActive == (status == Self.secureInputStatus) else { return }
+            self.statusHandler(status)
+        }
     }
 }
 

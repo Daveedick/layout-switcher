@@ -164,6 +164,24 @@ final class ClipboardReplacement {
         }
     }
 
+    /// Entry point for the explicit menu action. It only converts one copied text item.
+    static func transformCopiedText(on pasteboard: NSPasteboard, transform: (String) -> String?) -> Bool {
+        onMain {
+            guard isReadyForInputReplay() else { return false }
+            let initialCount = pasteboard.changeCount
+            let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+            guard let items = pasteboard.pasteboardItems, items.count == 1, let item = items.first,
+                  !item.types.contains(.fileURL), !item.types.contains(concealed),
+                  let original = item.string(forType: .string), original.utf8.count <= 256 * 1024,
+                  let converted = transform(original), converted != original else { return false }
+            let replacement = NSPasteboardItem()
+            guard replacement.setString(converted, forType: .string),
+                  pasteboard.changeCount == initialCount else { return false }
+            pasteboard.clearContents()
+            return pasteboard.writeObjects([replacement])
+        }
+    }
+
     /// Confirms that this prepared transaction still owns the replacement immediately before dispatch.
     func isPreparedReplacementCurrent() -> Bool {
         Self.onMain {
